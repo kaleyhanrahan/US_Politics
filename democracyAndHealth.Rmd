@@ -1,0 +1,276 @@
+---
+title: "Democracy and Public Health"
+author: Kaley Hanrahan
+date: February 3, 2017
+output:
+  html_document:
+    toc: true #table of contents
+    toc_depth: 4
+---
+
+In this file, I will clean, analyze, and visualize two datasets:
+(1) 'vdem.csv' - The Varieties of Democracy Dataset, version 6.2
+(2) 'UNdata.csv' - United Nations and World Health Organization data concerning ratio of physicians to people, prevalence of malnourishment in a population, and health expenditure per capita. 
+Much of the cleaning will be done using Hadley Wickham's tidyr. First, let's set our working directory.
+
+## Loading the Libraries and Data
+
+R Markdown will reset the working directory to the directory this file is saved in, but I like to save my data in a separate folder. So, I will save the path to the directory in which I have stored the data. I will call this 'working_directory' later in the document.
+```{r setwd, echo=FALSE}
+working_directory <- ("~/..")
+```
+
+Let's load the necessary libraries.
+```{r libraries, results='hide', message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(googleVis)
+library(plotly)
+```
+
+
+Load the relevant datasets.
+```{r loaddata, cache=TRUE, warning=FALSE}
+setwd(working_directory) # Note that I called the 'working_directory' set earlier
+vdem <- read.csv("vdem.csv")
+un <- read.csv("UNdata.csv")
+```
+
+## Part 1: Data Management
+Merge the two datasets above into one 'tidy' dataset.
+
+### Tidying UN data
+Initial cleaning and formatting of UN data. Convert the datatype of relevant columns to numeric.
+```{r unclean, warning=FALSE}
+un$Series.Code <- NULL # remove unnecessary column
+un[,4:59] <- lapply(un[,4:59], function(x) as.numeric(as.character(x))) # convert columns to numeric
+```
+
+
+Gather the year columns. Clean up the year labels and set as factor.
+```{r unyears}
+un <- gather(un, X1960..YR1960.:X2015..YR2015., key="year", value="data")
+un$year <- substr(un$year, 2, 5) %>%
+  as.factor
+```
+
+
+Before spreading the three variables of interest, we need to remove unecessary levels from that column.
+```{r unvars}
+levels(un$Series.Name) # see levels
+un <- un[un$Series.Name=="Physicians (per 1,000 people)" | # subset dataframe for labels of interest
+           un$Series.Name=="Health expenditure per capita (current US$)" | 
+           un$Series.Name=="Prevalence of undernourishment (% of population)", ]
+un$Series.Name <- droplevels(un$Series.Name) # drop old levels
+
+un <- spread(un, key='Series.Name', value='data')
+```
+
+
+### Tidying VDEM data
+Subset dataframe to keep only the necessary IDs (year, country) and variables of interest. I have decided to keep both country ID and country name to see which might be best to use when merging with the UN data.
+```{r vdemclean}
+vdem <- select(vdem, country_name, country_text_id, year, v2x_freexp, v2xcl_rol,
+               v2xeg_eqdr, v2x_corr, e_peedgini, e_Vanhanen_literate_ipo,
+               e_migdppc, e_peginiwi,
+               e_pemaliex, e_pefeliex)
+vdem$year <- as.factor(vdem$year) # convert year to factor
+```
+
+Variable Descriptions:
+*  v2x_freexp = freedom of expression index
+*  v2xcl_rol = equality before the law and individual liberty index
+*  v2xeg_eqdr = Equal distribution of resources index
+*  v2x_corr = political corruption index
+*  e_peedgini = educational inequality (Gini)
+*  e_Vanhanen_literate_ipo = literate population
+*  e_migdppc = GDP per capita
+*  e_peginiwi = Income inequality (Gini)
+*  e_pemaliex = Life Expectancy, Male
+*  e_pefeliex = Life Expectancy, Female
+
+### Data Exploration
+Before merging, I would like to explore the dataframes in full.
+
+#### Missingness
+Investigate missingness in variables of interest.
+```{r missing}
+sapply(vdem, function(x) sum(is.na(x)))
+sapply(un, function(x) sum(is.na(x)))
+```
+
+#### Countries
+Let's look at the number of unique countries in each dataset. Furthermore, let's examine the crossover between datasets - how many countries appear in both? I look at both country name and ID.
+```{r countrymatches, results="hide"}
+# 258 unique countries in UN data (for both country name and ID - to ensure data consistency)
+length(unique(un$Country.Name)) # = 258
+length(unique(un$Country.Code)) # = 258
+
+# 172 unique countries in VDEM data (for both country name and ID - to ensure data consistency)
+length(unique(vdem$country_name)) # = 172
+length(unique(vdem$country_text_id)) # = 172
+
+# Number of countries in both datasets (compare country name and ID to determine which is more useful)
+sum(unique(vdem$country_name) %in% unique(un$Country.Name)) # only 145 matching
+sum(unique(vdem$country_text_id) %in% unique(un$Country.Code)) # 161 matching
+```
+As the exploratory analysis above demonstrates, country ID/code is more useful for finding matches across datasets (as one might expect). 
+Unfortunately, both datasets contain information about countries that are not included in the other dataset. I will choose to keep data only for the countries included in both datasets.
+
+
+### Merging the Dataframes
+First let's rename variables to be more meaningful (and ensure that variable names are consistent across datasets).
+```{r renamevars}
+vdem = rename(vdem, cID=country_text_id, cName=country_name,
+              freeExp=v2x_freexp, indivLib=v2xcl_rol, 
+              equalRes=v2xeg_eqdr, polCorrupt=v2x_corr, 
+              educInequal=e_peedgini, liter=e_Vanhanen_literate_ipo, 
+              gdpPerCapita=e_migdppc, incomeInequal=e_peginiwi, 
+              mLifeExp=e_pemaliex, fLifeExp=e_pefeliex)
+
+un = rename(un, cID=Country.Code, cName=Country.Name, 
+            healthExpen=`Health expenditure per capita (current US$)`, 
+            phys=`Physicians (per 1,000 people)`, 
+            nourish=`Prevalence of undernourishment (% of population)`)
+```
+
+
+Now time to merge! I will merge by country ID (since there were more matches) and by year.
+```{r mergedataframes}
+df = merge(un, vdem, by=c("cID", "year"))
+```
+
+
+As a final check, I want to see what country names didn't match while their country codes did.
+```{r mismatches}
+notmatch = df[as.character(df$cName.x)!=as.character(df$cName.y),]
+df$cName.x<-NULL
+```
+As we can see, the mismatches in country names were due to slight differences in specific text used. This check reveals no data integrity issues.
+
+The first few rows of the data look like this:
+```{r head, warning=FALSE}
+library(knitr)
+kable(head(df))
+```
+
+
+## Part 2: Collapsing the Data
+For this section, I will choose 2 VDEM variables and 1 UN variable.
+```{r p2subset}
+df2 <- select(df, cID, year, nourish, freeExp, equalRes)
+```
+
+
+Below, the data is collapsed by year.
+```{r groupbyyear, warning=FALSE}
+df2_yr <- group_by(df2, year)
+mean_yr <- summarise(df2_yr, 
+                     nourishMean=mean(nourish, na.rm=TRUE),
+                     freeExpMean=mean(freeExp, na.rm=TRUE),
+                     equalResMean=mean(equalRes, na.rm=TRUE))
+
+library(knitr)
+kable(mean_yr, digits=3)
+```
+
+In this table, we can see that freedom of expression declines slightly across all countries through the 60s and early 70s, then increases steadily to present. Equality of resource distribution also seems to increase steadily. However, both of these measures seem to have momentarily peaked around 2011/2012. We have less history on prevalence of malnourishment, however we can see a clear decline since 1991.
+
+
+
+
+Here, the data is collapsed by country.
+```{r groupbycountry, warning=FALSE}
+df2_cID <- group_by(df2, cID)
+mean_cID <- summarise(df2_cID, 
+                     nourishMean=mean(nourish, na.rm=TRUE),
+                     freeExpMean=mean(freeExp, na.rm=TRUE),
+                     equalResMean=mean(equalRes, na.rm=TRUE))
+
+library(knitr)
+kable(mean_cID, digits=3)
+```
+
+Once again, we can see the data on malnourishment is much sparser than the other two measures. There is a wide range across countries in measures of both freedom of expression and equality of resource distribution. Because there are so many countries and they are not arranged in an intuitive way, it is hard to distinguish a clear pattern when the data is presented in this way.
+
+
+## Part 3: Graphics
+Here are scatterplots of freedom of expression by educational inequality - a plot for each year. The relationship seems to change over time in an interesting way.
+```{r 1scatterbyyear, fig.width=12, fig.height=12, cache=TRUE}
+g <- ggplot(df, aes(x=educInequal, y=freeExp)) +
+  geom_point() +
+  geom_smooth(method="lm") +
+  facet_wrap( ~ year)
+g
+```
+
+These are also scatterplots of freedom of expression by educational inequality - but a plot for each country
+```{r 2scatterbycountry, fig.width=12, fig.height=12, cache=TRUE}
+g <- ggplot(df, aes(x=nourish, y=freeExp)) +
+  geom_point() +
+  geom_smooth(method="lm") +
+  facet_wrap( ~ cID)
+g
+```
+
+In the time series line plot below, freedom of expression in the United States, Greece, and China are shown since 1960. 
+As you can see, the United States has a relatively consistently high score, while China has a relatively consistently low score. China's increase in the late 1970's highlights the changes in the politcal regime - after the death of Mao Zedong, Hua Guofeng's rise to power, and ultimately the focus on economic recovery that allowed for the reopening of schools, etc. The dip around 1989 coincides with the Tiananmen Square protests. 
+Most interesting to me was the drastic decrease in Greece's score from 1967 to 1974. This is due to the Greek military junta called the "Regime of the Colonels," during which consitutional protection around free speech was suspended.
+Visualizing the data this way allows us to see changes in countries over time, as well as compare across countries for context. Since these scores are rather abstract, the ability to see relative scores allows for a fuller understanding of the information.
+```{r 3tsggplot, , fig.width=8, fig.height=5, cache=TRUE}
+tsdata <- filter(df, cID=="USA"|cID=="CHN"|cID=="GRC")
+
+g <- ggplot(tsdata, aes(x=year, y=freeExp, group=cID, color=cID)) +
+  geom_line() +
+  ggtitle('Freedom of Expression Time Series Plot') +
+  xlab('Year') + 
+  ylab('Freedom of Expression')
+g
+```
+
+Here is the same plot as above, this time using plotly.
+```{r 4tsplotly, , fig.width=8, fig.height=5, cache=TRUE}
+p <- plot_ly(tsdata, x = ~year, y = ~freeExp, color=~cID,
+             type = "scatter", mode = "lines") %>%
+  layout(title = 'Freedom of Expression Time Series Plot',
+         yaxis = list(title='Freedom of Expression'),
+         xaxis = list(title='Year'))
+p
+```
+
+A motion chart of the data using googleVis. If this does not display, you may need to run the individual code chunk in the R-Markdown file.
+```{r 5motiongraph}
+df$year <- as.numeric(df$year)
+m <- gvisMotionChart(df, 
+                       idvar="cID", 
+                       timevar="year")
+plot(m)
+```
+
+Below is a plot of freedom of expression on the world map. Though we have scores for freedom of expression over time, this graphic displays the most recent value for freedom of expression for each country. It takes some time to load! As with the graph above, the individual code chunk may need to be run in the R-Markdown file.
+```{r 6worldmap}
+worldmap <- gvisGeoChart(df, "cID", "freeExp", 
+                  options=list(width=600, height=600))
+plot(worldmap)
+```
+
+Here is a 3d scatterplot of equality of distribution of resources, gdp per capita, and time. There is a clear relationship between gdp and equality of resources, where equality of resource distribution tends to increase as gdp per capita increases. Of course, there are a few significant outliers with very high gdp but relatively low levels of resource distribution equality. The color represents level of political corruption - although no clear pattern is apparent.
+```{r 7scatter3dplotly}
+p3d <- plot_ly(df, x = ~year, y = ~equalRes, z = ~gdpPerCapita, 
+        type = "scatter3d", 
+        marker = list(color = ~polCorrupt, 
+                      showscale = TRUE))
+p3d
+```
+
+Below I created violin plots to show the distribution of education inequality scores over time for three different countries. It is essentially a boxplot with mirrored rotated kernel density plots. Here we can see that Greece has not demonstrated a ton of movement - most measurements are between 24 and 49. The US had a small proportion of scores above the 20's, but most have been between 12 and 16 or so. China, on the otherhand, has had a very wide range of measuresments over time.
+```{r violinplot}
+dfviol <- filter(df, cID=="USA"|cID=="CHN"|cID=="GRC")
+
+vp <- ggplot(dfviol, aes(factor(cID), educInequal)) + 
+  geom_violin(aes(fill=cID))
+
+vp
+
+```
