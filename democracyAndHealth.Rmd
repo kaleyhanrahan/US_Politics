@@ -7,6 +7,7 @@ output:
     toc: true #table of contents
     toc_depth: 4
 ---
+### To see this project in full (with visualizations, etc.) follow this link http://rpubs.com/kaleyhanrahan/251384
 
 In this file, I will clean, analyze, and visualize two datasets:
 (1) 'vdem.csv' - The Varieties of Democracy Dataset, version 6.2
